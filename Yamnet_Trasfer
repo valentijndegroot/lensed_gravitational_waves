@@ -1,0 +1,232 @@
+import os
+
+from IPython import display
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+import tensorflow as tf
+import tensorflow_hub as hub
+import tensorflow_io as tfio
+
+from matplotlib import rcParams
+rcParams['text.usetex'] = True
+rcParams['text.latex.preamble'] = [r'\usepackage{amsmath}']
+rcParams['font.family'] = 'sans-serif'
+import matplotlib.font_manager as font_manager
+import matplotlib
+%matplotlib qt
+from matplotlib.ticker import FormatStrFormatter
+import math
+from tkinter import *
+from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import StrMethodFormatter
+
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+
+import pathlib
+
+###############################################
+
+#We load the yamnet model
+
+yamnet_model_handle = 'https://tfhub.dev/google/yamnet/1'
+yamnet_model = hub.load(yamnet_model_handle)
+
+    
+###############################################
+
+#We import the gravitational wave data which is in the format of WAV data
+
+data_dir = pathlib.Path(r'...')
+CATEGORIES = ['Unlensed_Wav', 'Lensed_Wav']
+for category in CATEGORIES:
+    path = os.path.join(data_dir, category) 
+    
+#label 0 is unlensed, label 1 is lensed
+
+import cv2
+data = []
+wav = []
+labels = []
+def create_data():
+    for i in range(len(CATEGORIES)):
+        category = CATEGORIES[i]
+        path = os.path.join(data_dir, category)
+        for img in os.listdir(path):
+            filename = os.path.join(path,img)
+            data.append([filename, i])
+            wav.append(filename)
+            labels.append(i)
+    return data, wav, labels
+    
+data, filenames, labels = create_data()
+
+###############################################
+
+#Utility functions for loading audio files and making sure the sample rate is correct.
+
+from scipy.io import wavfile
+import scipy.signal as sps
+
+def load_wav_16k_mono(filename):
+    """ Load a WAV file, convert it to a float tensor, resample to 16 kHz single-channel audio. """
+    sample_rate, data = wavfile.read(filename)
+    if np.max(data) != 0:
+        data= data / np.max(data)
+    number_of_samples = round((len(data)-1) * float(16000) / sample_rate)
+    data = sps.resample(data, number_of_samples)
+    data = tf.cast(data, dtype=tf.float32, name=None)
+    return data
+
+for i in range(0,len(filenames)):
+    filenames[i] = load_wav_16k_mono(filenames[i])
+
+###############################################
+
+#We prepare train,test,validate data
+
+from sklearn.model_selection import train_test_split
+X_train, X_testval, y_train, y_testval  = train_test_split(filenames, labels, test_size=0.2, random_state=1)
+X_test, X_val, y_test, y_val  = train_test_split(X_testval, y_testval, test_size=0.5, random_state=1)
+
+train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+train_ds.element_spec
+val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val))
+val_ds.element_spec
+test_ds = tf.data.Dataset.from_tensor_slices((X_test, y_test))
+test_ds.element_spec
+
+# applies the embedding extraction model to a wav data. This extracts the features from the data filtered by the transferred Yamnet model
+def extract_embedding(wav_data, label):
+  ''' run YAMNet to extract embedding from the wav data '''
+  scores, embeddings, spectrogram = yamnet_model(wav_data)
+  num_embeddings = tf.shape(embeddings)[0]
+  return (embeddings,
+            tf.repeat(label, num_embeddings))
+
+# extract embedding
+train_ds = train_ds.map(extract_embedding).unbatch()
+train_ds.element_spec
+val_ds = val_ds.map(extract_embedding).unbatch()
+val_ds.element_spec
+test_ds = test_ds.map(extract_embedding)
+test_ds.element_spec
+
+train_ds = train_ds.cache().shuffle(1600).batch(16).prefetch(tf.data.AUTOTUNE).repeat()
+val_ds = val_ds.cache().batch(16).prefetch(tf.data.AUTOTUNE).repeat()
+
+
+###############################################
+
+#We build on top of the embedded data the classification layers
+
+my_model1 = tf.keras.Sequential([
+    tf.keras.layers.Input(shape=(1024), dtype=tf.float32,
+                          name='input_embedding'),
+    tf.keras.layers.Dense(256, activation='selu'),
+    tf.keras.layers.Dense(128, activation='selu'),
+    tf.keras.layers.Dense(1, activation = 'sigmoid')
+], name='my_model')
+
+my_model1.summary()
+
+my_model1.compile(loss=tf.keras.losses.BinaryCrossentropy(), 
+                optimizer=keras.optimizers.Adam(learning_rate=0.00001), 
+                 metrics=['accuracy'])
+
+callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',
+                                            patience=10,
+                                            restore_best_weights=True)
+                                            
+                                            
+
+###############################################
+
+#We train the model and evaluate
+
+history1 = my_model1.fit(train_ds,
+                       steps_per_epoch=1600 ,
+                       epochs=50,
+                       batch_size = 16,
+                       validation_data = val_ds,
+                       validation_steps=200,
+                       callbacks=callback)
+
+###############################################
+xtest=[]
+ytest =[]
+for x in test_ds:
+    xtest.append(x[0])
+    ytest.append(x[1])
+categ = []
+results = []
+for i in range(len(xtest)):
+    result = my_model1(xtest[i]).numpy()
+    results.append(result.mean(axis=0))
+    if result.mean(axis=0) > 0.51:
+        categ.append(1)
+    else:
+        categ.append(0)
+        
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import f1_score
+print(accuracy_score(y_test, categ))
+print(recall_score(y_test, categ))
+print(f1_score(y_test, categ))
+
+###############################################
+
+#We construct roc curve
+
+from sklearn import datasets, metrics, model_selection, svm
+from sklearn.metrics import roc_curve
+fpr, tpr, treshold = roc_curve(y_test,results) 
+fig = plt.figure(1)
+ax = fig.add_subplot()
+line, =plt.plot(fpr,tpr, label = r'$\mathrm{YamNet (AUC = 0.90)}$',linewidth =4)
+ax.legend(handles=[line],fontsize=60)
+ax.set_ylabel(r'$\mathrm{True\, Positive\, Rate\,}\newline \mathrm{\,\, (Positive\, label:\, 1)}$',fontsize=60)
+ax.set_xlabel(r'$\mathrm{False\, Positive\, Rate\, (Positive\, label:\, 1)}$',fontsize=60)
+ax.yaxis.get_offset_text().set_fontsize(60)
+ax.tick_params(axis='both',  labelsize=60)
+ax.set_xticks(np.linspace(0, 1, 5))
+ax.set_yticks(np.linspace(0, 1, 5))
+
+###############################################
+#We construct confusion matrix
+
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+#Generate the confusion matrix
+cf_matrix = confusion_matrix(y_test, categ)
+
+group_names = [r'$\mathrm{True\, Unlensed}$','$\mathrm{False\, Lensed}$','$\mathrm{False\, Unlensed}$','$\mathrm{True\, Lensed}$']
+
+group_counts = ["{0:0.0f}".format(value) for value in
+                cf_matrix.flatten()]
+
+group_percentages = ["{0:.2%}".format(value) for value in
+                     cf_matrix.flatten()/np.sum(cf_matrix)]
+
+label = [f"{v1}\n{v2}\n{v3}" for v1, v2, v3 in
+          zip(group_names,group_counts,group_percentages)]
+
+label = np.asarray(label).reshape(2,2)
+
+ax = sns.heatmap(cf_matrix, annot=label, fmt='', cmap='Blues',annot_kws={"size": 60},cbar=False)
+
+ax.set_xlabel('$\mathrm{Predicted\, Values}$',fontsize = 60)
+ax.set_ylabel('$\mathrm{Actual\, Values }$', fontsize =60);
+
+## Ticket labels - List must be in alphabetical order
+ax.xaxis.set_ticklabels(['$\mathrm{Unlensed}$','$\mathrm{Lensed}$'])
+ax.yaxis.set_ticklabels(['$\mathrm{Unlensed}$','$\mathrm{Lensed}$'],va="center")
+ax.yaxis.get_offset_text().set_fontsize(60)
+ax.tick_params(axis='both',  labelsize=60)
+
+plt.show()
