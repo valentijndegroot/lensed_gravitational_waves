@@ -17,6 +17,7 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.ticker import StrMethodFormatter
 %matplotlib qt
 
+###############################################
 
 #The input data is a series of gravitational waves, either unlensed or lensed. Gravitational wave data is presented in the frequency domain from 0 to 1024 Hz
 #in steps of 0.125 Hz. The frequecies of the plus and cross polarisations are used as input. We first load the frequency files and then visualise them.
@@ -34,6 +35,8 @@ i = 13
 h_unlensed = hp_unlensed.loc[i] - hc_unlensed.loc[i]*(0+1j)
 h_unlensed = np.array(h_unlensed)
 
+###############################################
+
 #We visualise it in the frequency domain
 
 freq = np.linspace(0, 1024, 8193) 
@@ -48,6 +51,8 @@ ax1.yaxis.get_offset_text().set_fontsize(60)
 ax1.tick_params(axis='both',  labelsize=60)
 ax1.yaxis.set_major_locator(MaxNLocator(nbins = 3))
 ax1.set_xticks(np.linspace(min(freq), math.floor(max(freq)), 5))
+
+###############################################
 
 #We visualise it in the time domain. For this we perform inverse Fourier transform (constant q-transform is usual for gravitational waves, but here the time interval
 #is large enough to se Fourier transform). A window is applied to remove the spike at t=0, which is a relic of the periodicity of the Fourier transform and that the 
@@ -72,6 +77,7 @@ ax.set_xticks(np.arange(0,9,1))
 ax.grid(False)
 #plt.savefig(r'...')
 
+###############################################
 
 #The visualisation format for the ML-models is the spectrogram. We use NFFT =85 to make the small beating patterns visible.
 
@@ -86,6 +92,7 @@ ax.set_xticks(np.arange(0,9,1))
 spectrum, freqs, t, im = plt.specgram(h_unlensedtime_numpy_window, noverlap=50, NFFT =85, Fs=1024) 
 x = plt.pcolormesh(t, freqs,spectrum,alpha=0.35,shading= 'gouraud',cmap='viridis',vmax = spectrum.max()/2)
 
+###############################################
 
 # We convert the wave in time domain to a WAV file which will be used for the YAMNET transfer learning model.
 
