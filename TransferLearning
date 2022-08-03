@@ -1,0 +1,187 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import PIL
+import tensorflow as tf
+import cv2
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+import keras
+import matplotlib.font_manager as font_manager
+import matplotlib
+from matplotlib import rcParams
+rcParams['text.usetex'] = True
+rcParams['text.latex.preamble'] = [r'\usepackage{amsmath}']
+rcParams['font.family'] = 'sans-serif'
+%matplotlib qt
+import pathlib
+from sklearn.model_selection import train_test_split
+
+###############################################
+
+#We load the spectrograms which are stored in a local file.
+
+data_dir = pathlib.Path(r'...')
+
+CATEGORIES = ['Unlensed_Spec', 'Lensed_Spec']
+for category in CATEGORIES:
+    path = os.path.join(data_dir, category) 
+    
+img_height = 288
+img_width = 432   
+
+data = []
+images = []
+labels = []
+def create_data():
+    for i in range(len(CATEGORIES)):
+        category = CATEGORIES[i]
+        path = os.path.join(data_dir, category)
+        for img in os.listdir(path):
+            img_array = cv2.imread(os.path.join(path,img))
+            img_rgb = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+            preprocessed = cv2.resize(img_rgb, (480, 480))
+            data.append([preprocessed, i])
+            images.append(preprocessed)
+            labels.append(i)
+    return data, images, labels
+
+data, images, labels = create_data()
+
+###############################################
+
+#We prepare train, validate and test data
+
+X_train, X_testval, y_train, y_testval  = train_test_split(images, labels, test_size=0.2, random_state=1)
+X_val, X_test, y_val, y_test  = train_test_split(X_testval, y_testval, test_size=0.5, random_state=1)
+X_train = np.array(X_train)
+X_test = np.array(X_test)
+X_val = np.array(X_val)
+y_train = np.array(y_train)
+y_test = np.array(y_test)
+y_val = np.array(y_val)
+
+###############################################
+
+#We load the transfermodel EfficientNetV2L
+
+transfer_model = tf.keras.applications.EfficientNetV2L(weights='imagenet',include_top=False, input_shape=(480, 480, 3))
+transfer_model.summary()
+
+#We freeze the convolutional layers
+
+for layer in transfer_model.layers:
+    layer.trainable = False
+# Make sure you have frozen the correct layers
+for i, layer in enumerate(transfer_model.layers):
+    print(i, layer.name, layer.trainable)
+    
+x = transfer_model.output
+x = layers.Flatten()(x) # Flatten dimensions to for use in FC layers
+x = layers.Dense(256, activation='selu')(x)
+#x = layers.Dropout(0.5)(x) # Dropout layer to reduce overfitting
+x = layers.Dense(128, activation='selu')(x)
+x = layers.Dense(1, activation='sigmoid')(x) # Softmax for multiclass
+transfer_model = tf.keras.Model(inputs=transfer_model.input, outputs=x)
+
+import keras
+from keras.callbacks import EarlyStopping
+from keras.callbacks import ModelCheckpoint
+
+transfer_model.compile(loss=tf.keras.losses.BinaryCrossentropy(), 
+                       optimizer=keras.optimizers.Adam(learning_rate=0.00001), 
+                       metrics=["accuracy"])
+                   
+callback = [EarlyStopping(monitor='val_loss', patience=10, verbose = 1),
+             ModelCheckpoint(filepath='best_model_transferupdate.h5', monitor='val_loss', verbose=1,save_best_only=True)]
+             
+############################################### 
+
+#We train the model and save it
+
+history = transfer_model.fit(X_train, y_train, batch_size = 32, epochs=5, validation_data=(X_val,y_val), verbose = 1,callbacks = callback)                       
+              
+#transfer_model.save('transferefficientnet')
+#np.save('historytransferefficientnet.npy',history.history)    
+
+###############################################
+
+#We predict the labels on the test set
+
+reconstructed_model = keras.models.load_model('best_model_transferupdate.h5')
+
+predicted = reconstructed_model.predict(X_test)
+
+predictedlabels = []
+for i in range(0,len(predicted)):
+    if predicted[i][0] > 0.23:
+        predictedlabels.append(1) 
+    else:
+        predictedlabels.append(0) 
+        
+###############################################
+        
+from sklearn.metrics import recall_score
+from sklearn.metrics import f1_score
+from sklearn.metrics import accuracy_score
+print(accuracy_score(y_test, predictedlabels))
+print(recall_score(y_test, predictedlabels))
+print(f1_score(y_test, predictedlabels))
+
+###############################################
+
+#We visualise the ROC curve
+
+from sklearn import datasets, metrics, model_selection, svm
+from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_auc_score
+
+fpr, tpr, treshold = roc_curve(y_test,predicted) 
+auc = roc_auc_score(y_test,predicted) 
+
+fig = plt.figure(1)
+ax = fig.add_subplot()
+line, =plt.plot(fpr,tpr, label = r'$\mathrm{EfficientNetV2-L\, (AUC = '+str(round(auc,2))+')}$',linewidth =4)
+ax.legend(handles=[line],fontsize=50,loc='lower right')
+ax.set_ylabel(r'$\mathrm{True\, Positive\, Rate\,}\newline \mathrm{\,\, (Positive\, label:\, 1)}$',fontsize=70)
+ax.set_xlabel(r'$\mathrm{False\, Positive\, Rate\, (Positive\, label:\, 1)}$',fontsize=70)
+ax.yaxis.get_offset_text().set_fontsize(70)
+ax.tick_params(axis='both',  labelsize=70)
+ax.set_xticks(np.linspace(0, 1, 5))
+ax.set_yticks(np.linspace(0, 1, 5))
+
+###############################################
+
+#We visualise the confusion matrix
+
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+#Generate the confusion matrix
+cf_matrix = confusion_matrix(y_test, predictedlabels)
+
+group_names = [r'$\mathrm{True\, Unlensed}$','$\mathrm{False\, Lensed}$','$\mathrm{False\, Unlensed}$','$\mathrm{True\, Lensed}$']
+
+group_counts = ["{0:0.0f}".format(value) for value in
+                cf_matrix.flatten()]
+
+group_percentages = ["{0:.2%}".format(value) for value in
+                     cf_matrix.flatten()/np.sum(cf_matrix)]
+
+label = [f"{v1}\n{v2}\n{v3}" for v1, v2, v3 in
+          zip(group_names,group_counts,group_percentages)]
+
+label = np.asarray(label).reshape(2,2)
+
+ax = sns.heatmap(cf_matrix, annot=label, fmt='', cmap='Blues',annot_kws={"size": 60},cbar=False)
+
+ax.set_xlabel('$\mathrm{Predicted\, Values}$',fontsize = 60)
+ax.set_ylabel('$\mathrm{Actual\, Values }$', fontsize =60);
+
+## Ticket labels - List must be in alphabetical order
+ax.xaxis.set_ticklabels(['$\mathrm{Unlensed}$','$\mathrm{Lensed}$'])
+ax.yaxis.set_ticklabels(['$\mathrm{Unlensed}$','$\mathrm{Lensed}$'],va="center")
+ax.yaxis.get_offset_text().set_fontsize(60)
+ax.tick_params(axis='both',  labelsize=60)
+plt.show()
