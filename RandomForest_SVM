@@ -1,0 +1,157 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import PIL
+import tensorflow as tf
+import cv2
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+from sklearn.metrics import recall_score
+from sklearn.metrics import f1_score
+from sklearn.metrics import accuracy_score
+import pathlib
+from matplotlib import rcParams
+rcParams['text.usetex'] = True
+rcParams['text.latex.preamble'] = [r'\usepackage{amsmath}']
+rcParams['font.family'] = 'sans-serif'
+import matplotlib.font_manager as font_manager
+import matplotlib
+%matplotlib qt
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+###############################################
+
+#We load the spectrograms
+
+data_dir = pathlib.Path(r'...')
+
+CATEGORIES = ['Unlensed_Spec', 'Lensed_Spec']
+for category in CATEGORIES:
+    path = os.path.join(data_dir, category) 
+    
+img_height = 288
+img_width = 432   
+
+
+data = []
+images = []
+labels = []
+def create_data():
+    for i in range(len(CATEGORIES)):
+        category = CATEGORIES[i]
+        path = os.path.join(data_dir, category)
+        for img in os.listdir(path):
+            img_array = cv2.imread(os.path.join(path,img))
+            img_rgb = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+            #new_array = cv2.resize(img_array, (img_width, img_height))
+            data.append([img_rgb, i])
+            images.append(img_rgb)
+            labels.append(i)
+    return data, images, labels
+    
+data,images, labels = create_data()
+
+###############################################
+
+#We prepare the train and test data for the learning and evaluation 
+
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test  = train_test_split(images, labels, test_size=0.2, random_state=1)
+
+#We convert the spectrograms to a flat matrix which can be used for the input of RandomForest and SVM
+
+def makematrix(data):
+        numImages = len(data)
+        sz = (img_width, img_height,3)
+
+        datamatrix = np.zeros((numImages, sz[0] * sz[1]), dtype=np.float32)
+
+        for i in range(0, numImages):
+            data1 = np.float32(data[i])                       # This conversion is needed for conversion to grayscale
+            image1 = cv2.cvtColor(data1, cv2.COLOR_BGR2GRAY)  # We convert to gray images
+            image = image1.flatten()                          # We convert the 100x100 gray image to one dimension 10000
+            image = image/255
+            datamatrix[i,:] = image
+
+        return datamatrix
+        
+X_train_flat = makematrix(X_train)
+X_test_flat = makematrix(X_test)
+
+###############################################
+
+#We train a RandomForest
+
+from sklearn.ensemble import RandomForestClassifier
+
+clf = RandomForestClassifier(random_state=200,n_estimators=1000)
+clf.fit(X_train_flat,y_train)
+RandomForestClassifier(...)
+
+#You can also train an SVM or GradienBoostClassifier
+
+from sklearn import svm
+C = 1000
+gamma = 0.03
+kernel = 'rbf'
+clf = svm.SVC(gamma = gamma,C=C,kernel= kernel)
+clf.fit(X_train_flat,y_train)
+svm.SVC(...)
+
+###############################################
+
+#Once it is trained, we can check the performance
+
+predicted = clf.predict(X_test_flat)
+print(accuracy_score(y_test, predicted))
+print(recall_score(y_test, predicted))
+print(f1_score(y_test, predicted))
+
+###############################################
+
+#We plot the ROC curve
+
+fig = plt.figure(1)
+ax = fig.add_subplot()
+metrics.plot_roc_curve(clf, X_test_flat,y_test,ax=ax,linewidth =4) 
+_, labels = ax.get_legend_handles_labels()
+labels = np.array(labels)  
+ax.legend([labels[0]],fontsize=50)
+ax.set_ylabel(r'$\mathrm{True\, Positive\, Rate\,}\newline \mathrm{\,\, (Positive\, label:\, 1)}$',fontsize=60)
+ax.set_xlabel(r'$\mathrm{False\, Positive\, Rate\, (Positive\, label:\, 1)}$',fontsize=60)
+ax.yaxis.get_offset_text().set_fontsize(60)
+ax.tick_params(axis='both',  labelsize=60)
+ax.set_xticks(np.linspace(0, 1, 5))
+ax.set_yticks(np.linspace(0, 1, 5))
+
+###############################################
+
+#Generate the confusion matrix
+cf_matrix = confusion_matrix(y_test, predicted)
+
+group_names = [r'$\mathrm{True\, Unlensed}$','$\mathrm{False\, Lensed}$','$\mathrm{False\, Unlensed}$','$\mathrm{True\, Lensed}$']
+
+group_counts = ["{0:0.0f}".format(value) for value in
+                cf_matrix.flatten()]
+
+group_percentages = ["{0:.2%}".format(value) for value in
+                     cf_matrix.flatten()/np.sum(cf_matrix)]
+
+label = [f"{v1}\n{v2}\n{v3}" for v1, v2, v3 in
+          zip(group_names,group_counts,group_percentages)]
+
+label = np.asarray(label).reshape(2,2)
+
+ax = sns.heatmap(cf_matrix, annot=label, fmt='', cmap='Blues',annot_kws={"size": 60},cbar=False)
+
+ax.set_xlabel('$\mathrm{Predicted\, Values}$',fontsize = 60)
+ax.set_ylabel('$\mathrm{Actual\, Values }$', fontsize =60);
+
+# Ticket labels - List must be in alphabetical order
+ax.xaxis.set_ticklabels(['$\mathrm{Unlensed}$','$\mathrm{Lensed}$'])
+ax.yaxis.set_ticklabels(['$\mathrm{Unlensed}$','$\mathrm{Lensed}$'],va="center")
+ax.yaxis.get_offset_text().set_fontsize(60)
+ax.tick_params(axis='both',  labelsize=60)
+plt.show()
